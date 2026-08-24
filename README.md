@@ -19,7 +19,7 @@ Stream model replies in the terminal, switch models with `/model`, and remember 
 - Bare number after a model list selects that entry
 - Optional thinking / reasoning stream
 - Syntax-highlighted fenced code blocks in the terminal
-- Last model saved under the user config directory
+- I didn't want to store model information in user data location, better use terminal flag.
 - Optional [Rich](https://github.com/Textualize/rich) UI (falls back to ANSI if missing)
 
 ---
@@ -127,7 +127,7 @@ python3 chat.py
 python chat.py
 ```
 
-### Optional flags
+### Optional flags (beta)
 
 ```bash
 python chat.py --model nvidia/nemotron-3-super-120b-a12b
