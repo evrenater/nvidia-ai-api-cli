@@ -9,6 +9,9 @@ Stream model replies in the terminal, switch models with `/model`, and remember 
 - **API endpoint:** `https://integrate.api.nvidia.com/v1/chat/completions`
 - **License:** [GPL-3.0](LICENSE)
 
+![nvidia-ai-api-cli screenshot](nvidia-ai-api-cli.png)
+
+
 ---
 
 ## Features
@@ -175,6 +178,7 @@ After `/model` prints a numbered list, typing `64` and Enter selects model **#64
 nvidia-ai-api-cli/
 ├── chat.py              # CLI entry point
 ├── requirements.txt
+├── nvidia-ai-api-cli.png
 ├── LICENSE              # GPL-3.0
 └── README.md
 ```
