@@ -60,7 +60,7 @@ cd nvidia-ai-api-cli
 
 ### Virtual environment (recommended)
 
-**Linux / macOS**
+**Linux / macOS (Not tested on macOS)**
 
 ```bash
 python3 -m venv .venv
