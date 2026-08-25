@@ -5,7 +5,7 @@ Command-line chat client for the [NVIDIA NIM / Integrate API](https://build.nvid
 Stream model replies in the terminal, switch models with `/model`, and remember the last selected model between sessions.
 
 - **Repo:** [github.com/evrenater/nvidia-ai-api-cli](https://github.com/evrenater/nvidia-ai-api-cli)
-- **Default model:** `nvidia/nemotron-3-super-120b-a12b`
+- **Default model:** `nvidia/nemotron-3-ultra-550b-a55b`
 - **API endpoint:** `https://integrate.api.nvidia.com/v1/chat/completions`
 - **License:** [GPL-3.0](LICENSE)
 
