@@ -592,4 +592,459 @@ class StreamPrinter:
                 self.inline_buf += ch
             return
         if self.inline == "bold":
-            if
+            if ch == "*":
+                self.inline = "bold2"
+            else:
+                self.inline_buf += ch
+            return
+        if self.inline == "bold2":
+            if ch == "*":
+                self._w(BOLD + self.inline_buf + RESET)
+                self.inline = "n"
+                self.inline_buf = ""
+            else:
+                self.inline_buf += "*" + ch
+                self.inline = "bold"
+            return
+ 
+    def _emit_structural(self, line: str) -> None:
+        stripped = line.lstrip()
+        if stripped.startswith("###"):
+            title = stripped.lstrip("#").strip()
+            self._w(f"\n{HEAD_FG}{title}{RESET}\n")
+        elif stripped.startswith("##"):
+            title = stripped.lstrip("#").strip()
+            self._w(f"\n{HEAD_FG}{BOLD}{title}{RESET}\n")
+        elif stripped.startswith("#"):
+            title = stripped.lstrip("#").strip()
+            self._w(f"\n{HEAD_FG}{BOLD}{title}{RESET}\n")
+        elif stripped.startswith(">"):
+            body = stripped[1:].lstrip()
+            self._w(f"{QUOTE_FG}│ {RESET}")
+            saved = (self.inline, self.inline_buf)
+            self.inline, self.inline_buf = "n", ""
+            self._prose(body)
+            self.inline, self.inline_buf = saved
+            self._w("\n")
+        else:
+            self._prose(line)
+            self._w("\n")
+ 
+ 
+def fetch_models(api_key: str, url: str = MODELS_URL, timeout: int = 30) -> List[str]:
+    resp = requests.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        timeout=timeout,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    items = data.get("data") or data.get("models") or []
+    ids: List[str] = []
+    for item in items:
+        if isinstance(item, str):
+            ids.append(item)
+        elif isinstance(item, dict):
+            mid = item.get("id") or item.get("name")
+            if mid:
+                ids.append(str(mid))
+    return sorted(set(ids), key=str.lower)
+ 
+ 
+def is_chat_model(model_id: str) -> bool:
+    low = model_id.lower()
+    return not any(h in low for h in NON_CHAT_HINTS)
+ 
+ 
+class ModelCatalog:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.all_ids: List[str] = []
+        self.last_shown: List[str] = []
+        self.pick_pending = False
+ 
+    def ensure(self) -> List[str]:
+        if not self.all_ids:
+            print(f"{C.DIM}Fetching model list...{C.END}")
+            self.all_ids = fetch_models(self.api_key)
+        return self.all_ids
+ 
+ 
+def print_model_list(models: List[str], current: str) -> None:
+    if not models:
+        print(f"{C.YELLOW}No models to show.{C.END}")
+        return
+    width = len(str(len(models)))
+    for i, mid in enumerate(models, 1):
+        mark = "*" if mid == current else " "
+        line = f"{mark} {str(i).rjust(width)}. {mid}"
+        if mid == current:
+            print(f"{C.GREEN}{C.BOLD}{line}{C.END}")
+        else:
+            print(line)
+    print(f"\n{len(models)} models | current: {C.CYAN}{current}{C.END}")
+    print("Select with  /model <number>  or  /model <id>")
+    print("Filter with  /model llama")
+ 
+ 
+def handle_model_command(arg: str, client: NvidiaChat, catalog: ModelCatalog) -> None:
+    arg = arg.strip().strip('"').strip("'")
+    try:
+        all_ids = catalog.ensure()
+    except Exception as e:
+        print(f"{C.RED}Could not list models:{C.END} {e}")
+        return
+    chat_ids = [m for m in all_ids if is_chat_model(m)]
+    pool = chat_ids or all_ids
+    if not arg:
+        catalog.last_shown = pool
+        catalog.pick_pending = True
+        print_model_list(pool, client.model)
+        return
+    if arg.isdigit():
+        source = catalog.last_shown or pool
+        idx = int(arg)
+        if 1 <= idx <= len(source):
+            client.model = source[idx - 1]
+            catalog.pick_pending = False
+            print(f"{C.GREEN}Model set to {client.model}{C.END}")
+            return
+        print(f"{C.RED}No model #{idx}.{C.END} Run /model first.")
+        return
+    exact = [m for m in all_ids if m.lower() == arg.lower()]
+    if exact:
+        client.model = exact[0]
+        catalog.pick_pending = False
+        print(f"{C.GREEN}Model set to {client.model}{C.END}")
+        return
+    matches = [m for m in pool if arg.lower() in m.lower()]
+    if len(matches) == 1:
+        client.model = matches[0]
+        catalog.pick_pending = False
+        print(f"{C.GREEN}Model set to {client.model}{C.END}")
+        return
+    if matches:
+        catalog.last_shown = matches
+        catalog.pick_pending = True
+        print_model_list(matches, client.model)
+        return
+    print(f"{C.RED}No model matching {arg!r}{C.END}")
+    print("Try /model to list, or paste a full id like nvidia/nemotron-3-super-120b-a12b")
+ 
+ 
+class NvidiaChat:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        base_url: str = DEFAULT_URL,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float = DEFAULT_TOP_P,
+        timeout: int = DEFAULT_TIMEOUT,
+        enable_thinking: bool = False,
+        stream: bool = True,
+        show_thinking: bool = True,
+        on_thinking: Optional[Any] = None,
+        on_content: Optional[Any] = None,
+    ):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.timeout = timeout
+        self.enable_thinking = enable_thinking
+        self.stream = stream
+        self.show_thinking = show_thinking
+        self.on_thinking = on_thinking
+        self.on_content = on_content
+        self.messages: List[Dict[str, Any]] = []
+ 
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if self.stream else "application/json",
+        }
+ 
+    def _payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": self.messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stream": self.stream,
+        }
+        if self.enable_thinking:
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
+        return payload
+ 
+    def _print_thinking_header(self) -> None:
+        print(f"\n{C.DIM}🤔 Thinking...{C.END}")
+ 
+    def _print_thinking_chunk(self, text: str) -> None:
+        print(f"{C.DIM}{text}{C.END}", end="", flush=True)
+ 
+    def _print_assistant_header(self) -> None:
+        print(f"\n{C.GREEN}{C.BOLD}Assistant:{C.END}")
+ 
+    def _stream_response(self, response: requests.Response) -> str:
+        full_content: List[str] = []
+        thinking_started = False
+        answer_started = False
+        printer: Optional[StreamPrinter] = None
+        try:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode("utf-8").strip()
+                if line == "data: [DONE]":
+                    break
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    data = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning and self.show_thinking:
+                    if not thinking_started:
+                        thinking_started = True
+                        self._print_thinking_header()
+                        if self.on_thinking is not None:
+                            self.on_thinking("__start__")
+                    self._print_thinking_chunk(reasoning)
+                    if self.on_thinking is not None:
+                        self.on_thinking(reasoning)
+                content = delta.get("content")
+                if not content:
+                    continue
+                if not answer_started:
+                    print()
+                    self._print_assistant_header()
+                    printer = StreamPrinter()
+                    answer_started = True
+                    if self.on_thinking is not None:
+                        self.on_thinking("__end__")
+                full_content.append(content)
+                if printer is not None:
+                    printer.feed(content)
+                if self.on_content is not None:
+                    self.on_content(content)
+        finally:
+            if printer is not None:
+                printer.finish()
+            if self.on_thinking is not None and thinking_started and not answer_started:
+                self.on_thinking("__end__")
+        return "".join(full_content)
+ 
+    def _non_stream_response(self, response: requests.Response) -> str:
+        data = response.json()
+        message = data["choices"][0]["message"]
+        content = message.get("content", "") or ""
+        reasoning = message.get("reasoning_content") or message.get("reasoning")
+        if reasoning and self.show_thinking:
+            print(f"\n{C.DIM}thinking...\n{reasoning}{C.END}\n")
+        if reasoning and self.on_thinking is not None:
+            self.on_thinking("__start__")
+            self.on_thinking(reasoning)
+            self.on_thinking("__end__")
+        self._print_assistant_header()
+        printer = StreamPrinter()
+        printer.feed(content)
+        printer.finish()
+        if self.on_content is not None:
+            self.on_content(content)
+        return content
+ 
+    def chat(self, user_content: Any) -> Optional[str]:
+        self.messages.append({"role": "user", "content": user_content})
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                with requests.post(
+                    self.base_url,
+                    headers=self._headers(),
+                    json=self._payload(),
+                    stream=self.stream,
+                    timeout=self.timeout,
+                ) as resp:
+                    if resp.status_code != 200:
+                        print(f"\n{C.RED}❌ HTTP {resp.status_code}:{C.END} {resp.text[:500]}")
+                        self.messages.pop()
+                        return None
+                    if self.stream:
+                        reply = self._stream_response(resp)
+                    else:
+                        reply = self._non_stream_response(resp)
+                    if reply is not None:
+                        self.messages.append({"role": "assistant", "content": reply})
+                        return reply
+            except requests.exceptions.Timeout:
+                print(f"\n{C.YELLOW}⏳ Timeout (attempt {attempt}/{MAX_RETRIES}){C.END}")
+                if attempt == MAX_RETRIES:
+                    print(f"{C.YELLOW} Try lower --max-tokens or disable --thinking{C.END}")
+                    self.messages.pop()
+                    return None
+                time.sleep(2)
+            except requests.exceptions.RequestException as e:
+                print(f"\n{C.RED}❌ Network error: {e}{C.END}")
+                self.messages.pop()
+                return None
+        return None
+ 
+    def clear(self):
+        self.messages.clear()
+ 
+ 
+PROMPT_STYLE = Style.from_dict(
+    {
+        "prompt": "ansicyan bold",
+    }
+)
+ 
+ 
+def build_session() -> PromptSession:
+    kb = KeyBindings()
+ 
+    @kb.add("enter")
+    def _enter(event):
+        event.current_buffer.insert_text("\n")
+ 
+    def _submit(event):
+        if event.current_buffer.text.strip():
+            event.current_buffer.validate_and_handle()
+ 
+    @kb.add("escape", "enter")
+    def _meta_enter(event):
+        _submit(event)
+ 
+    @kb.add("c-d")
+    def _ctrl_d(event):
+        if event.current_buffer.text.strip():
+            _submit(event)
+        else:
+            event.app.exit(result=None)
+ 
+    return PromptSession(multiline=True, key_bindings=kb, style=PROMPT_STYLE)
+ 
+ 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="NVIDIA AI API CLI (multiline input)")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--top-p", type=float, default=DEFAULT_TOP_P)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--thinking", action="store_true")
+    parser.add_argument("--hide-thinking", action="store_true")
+    parser.add_argument("--no-stream", action="store_true")
+    parser.add_argument("--system", type=str)
+    args = parser.parse_args()
+ 
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        print("NVIDIA_API_KEY not set")
+        print("  PowerShell -> $env:NVIDIA_API_KEY = 'nvapi-...'")
+        print("  bash       -> export NVIDIA_API_KEY='nvapi-...'")
+        sys.exit(1)
+ 
+    client = NvidiaChat(
+        api_key=api_key,
+        model=args.model,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        timeout=args.timeout,
+        enable_thinking=args.thinking,
+        stream=not args.no_stream,
+        show_thinking=not args.hide_thinking,
+    )
+    catalog = ModelCatalog(api_key)
+    if args.system:
+        client.messages.append({"role": "system", "content": args.system})
+ 
+    print_help = (
+        "Commands:\n"
+        "  /help              Show this help\n"
+        "  /model             List chat models\n"
+        "  /model <n|id>      Select a model\n"
+        "  /quit              Exit\n"
+        "\n"
+        "Input:\n"
+        "  Enter              New line (paste code freely)\n"
+        "  Esc then Enter     Send  (Alt+Enter)\n"
+        "  Ctrl+D             Send (empty line quits)\n"
+        "  Ctrl+C             Quit\n"
+    )
+ 
+    if RICH_AVAILABLE:
+        title = Text(" NVIDIA AI API CLI ", style="bold white on green")
+        console.print(Panel.fit(title, border_style="bright_green"))
+        console.print(f"[dim]Model: {args.model}[/dim]")
+        console.print(print_help)
+    else:
+        print(f"{C.CYAN}{C.BOLD}╭─────────────────────╮")
+        print("│ NVIDIA AI API CLI │")
+        print(f"╰─────────────────────╯{C.END}")
+        print(f"{C.DIM}Model: {args.model}\n")
+        print(print_help)
+ 
+    session = build_session()
+    while True:
+        try:
+            if RICH_AVAILABLE:
+                text = session.prompt([("class:prompt", "You: ")])
+            else:
+                text = session.prompt(f"{C.BLUE}{C.BOLD}You:{C.END} ")
+        except KeyboardInterrupt:
+            print("\nBye!")
+            break
+        except EOFError:
+            print("\nBye!")
+            break
+ 
+        if text is None:
+            print("\nBye!")
+            break
+ 
+        text = text.strip("\n").rstrip()
+        if not text:
+            continue
+ 
+        parts = text.split(maxsplit=1)
+        head = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+ 
+        if head in ("/quit", "/exit", "/bye", "/q"):
+            print("Bye!")
+            break
+        if head == "/help":
+            if RICH_AVAILABLE:
+                console.print(print_help)
+            else:
+                print(print_help)
+            continue
+        if head in ("/model", "/models"):
+            handle_model_command(arg, client, catalog)
+            continue
+        if catalog.pick_pending and text.isdigit():
+            handle_model_command(text, client, catalog)
+            continue
+        catalog.pick_pending = False
+        client.chat(text)
+ 
+ 
+if __name__ == "__main__":
+    main()
+ 
