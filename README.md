@@ -46,7 +46,7 @@ pip install -r requirements.txt
 Or:
 
 ```bash
-pip install requests rich
+pip install requests rich prompt_toolkit
 ```
 
 ---
